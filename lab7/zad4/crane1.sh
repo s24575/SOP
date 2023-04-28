@@ -9,14 +9,13 @@ for file in first/*; do
     done
     echo "$file"
     if [ -f "$file" ]; then
-        echo "created"
         mv "$file" buffer/
         ((counter++))
     fi
     sleep 1
 done
 
-kill -USR2 $PPID
-echo "crane1: $counter"
+# This kill was causing the issue, somehow bypassing the later exit and returning 140
+# kill -USR2 $PPID
 
-exit 0
+exit $counter

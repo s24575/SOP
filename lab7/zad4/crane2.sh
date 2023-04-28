@@ -22,9 +22,7 @@ while true; do
     elif [ $hasCrane1Finished = true ]; then
         break
     fi
-    sleep 3
+    sleep 2
 done
 
-echo "crane2: $counter"
-
-exit 0
+exit $counter
