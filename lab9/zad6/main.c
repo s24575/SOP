@@ -1,28 +1,3 @@
-/*
-Zadanie 6. (5 pkt.)
-Napisz program, który będzie symulatorem sygnalizacji świetlnej na skrzyżowaniu czterech ulic.
-Symulator powinien składać się z:
-    - czterech procesów, które będą symulowały pas ruchu,
-    - procesu, który będzie nadzorował pracę skrzyżowania.
-
-Proces nadzorujący powinien utworzyć cztery procesy potomne, które będą symulowały sygnalizację świetlną. (0,5 pkt.)
-Każdy z tych czterech procesów potomnych powinien utworzyć po dwa wątki. (0,5 pkt.)
-    - wątek obsługujący zmiany świateł (w odpowiednich odstępach czasu),
-    - wątek symulujący ruch pojazdów na pasie ruchu.
-
-Proces nadzorujący powinien, co jakiś czas, wysyłać sygnał SIGUSR1 do "losowo" wybranego procesu.
-Po odebraniu komunikatu SIGUSR1 proces symulujący pas ruchu powinien zapisać odległość pojazdu z początkową wartością 50,
-która zostanie zapisana w tablicy, w miejscu o wartości 0. Drugi wątek powinien, co jakiś czas, zmniejszać o 1 niezerowe wartości,
-przy czym jeżeli istnieje jakaś wartość w tablicy, która jest mniejsza lub równa 20 to wszystkie wartości tablicy powinny być
-zmniejszane tylko wtedy, gdy pierwszy wątek ma "zapalone" zielone światło. Element tablicy powinien być zmniejszany dopóki nie będzie
-równy 0 (zadbaj o komunikację miedzy procesami i wątkami). (2 pkt.)
-Symulator powinien zakończyć działanie kiedy dojdzie do wypadku.
-Do wypadku może dojść, jeżeli któryś z pasów ruchu przyjął sygnał SIGUSR1 w momencie, kiedy wątek sterujący zawiera element o wartości
-50 (0,5 pkt.) lub kiedy jakiś pionowy i poziomy pas ruchu zawiera pojazd o wartości mniejszej lub równej 10 w tym samym czasie
-(1,5 pkt.) (wykorzystaj odpowiednie komunikatu procesów pasa ruchu i jego wątków z procesem nadzorującym, oraz musisz wyróżnić
-dwa procesy pasa ruchu jako poziome oraz dwa procesy pasa ruchu pionowe).
-*/
-
 #include <stdio.h>
 #include <unistd.h>
 #include <sys/wait.h>
@@ -35,33 +10,48 @@ dwa procesy pasa ruchu jako poziome oraz dwa procesy pasa ruchu pionowe).
 
 #define LANES 4
 #define SIZE 50
+
+#define SIGNALIZATION_DELAY 10000
+#define TRAFFIC_DELAY 5000
+#define MAIN_PROCESS_DELAY 10000
+
 int spots[SIZE];
 bool is_green_light = false;
-bool is_vertical = false;
+bool accident = false;
+int lane_id;
 
 void* handle_signalization(void *arg) {
-    while(true){
-        // change lights (random or vertical/horizontal sync?)
+    printf("Created lane %d signalization thread.\n", lane_id);
+    while(!accident){
+        usleep(SIGNALIZATION_DELAY);
+        is_green_light = !is_green_light;
     }
     return NULL;
 }
 
 void* handle_traffic(void *arg) {
-    // crash if 2 vertical/horizontal lines have a car <= 10
-    while(true){
+    printf("Created lane %d traffic thread.\n", lane_id);
+    while(!accident){
         int min = INT_MAX;
         for(int i = 0; i < SIZE; i++){
-            if(spots[i] < min){
+            if(spots[i] && spots[i] < min){
                 min = spots[i];
             }
         }
 
-        if(min > 20 || is_green_light)
-        for(int i = 0; i < SIZE; i++){
-            if(spots[i] > 0){
-                spots[i]--;
+        if(min > 20 || is_green_light){
+            for(int i = 0; i < SIZE; i++){
+                if(spots[i] > 0){
+                    spots[i]--;
+                }
             }
         }
+
+        if(min <= 10){
+            kill(getppid(), (lane_id & 1) ? SIGUSR1 : SIGUSR2);
+        }
+
+        usleep(TRAFFIC_DELAY);
     }
     return NULL;
 }
@@ -70,60 +60,109 @@ void add_car_to_lane(){
     for(int i = 0; i < SIZE; i++){
         if(spots[i] == 0){
             spots[i] = SIZE;
-            return;
+            break;
         } else if(spots[i] == SIZE){
-            printf("Crash at spot 50.\n");
-            kill(getppid(), SIGINT);
+            printf("Crash at lane %d: spot %d.\n", lane_id, SIZE);
+            accident = true;
+            break;
         }
     }
-    printf("No free spots in this lane.\n");
 }
 
 void print_lane(){
+    printf("[%d] %s: ", lane_id, (is_green_light) ? "green" : "red");
     for(int i = 0; i < SIZE; i++){
         printf("%d ", spots[i]);
     }
     printf("\n");
 }
 
-void process_lane(bool orientation){
-    is_vertical = orientation;
-    pthread_t threadId1, threadId2;
-    pthread_create(&threadId1, NULL, handle_signalization, NULL);
-    pthread_create(&threadId2, NULL, handle_traffic, NULL);
+void process_lane(int process_id){
+    printf("Created lane %d.\n", process_id);
+
+    lane_id = process_id;
+    is_green_light = lane_id & 1;
 
     signal(SIGUSR1, add_car_to_lane);
     signal(SIGUSR2, print_lane);
 
-    pthread_join(threadId1, NULL);
-    pthread_join(threadId2, NULL);
+    pthread_t threadId1, threadId2;
+    pthread_create(&threadId1, NULL, handle_signalization, NULL);
+    pthread_create(&threadId2, NULL, handle_traffic, NULL);
 
+    while(!accident){
+        pause();
+    }
+}
+
+void cleanup(){
+    printf("Cleaning up...\n");
+    kill(0, SIGTERM);
+}
+
+void handle_SIGINT(){
     exit(0);
+}
+
+bool is_vertical_in_range = false;
+bool is_horizontal_in_range = false;
+
+void handle_SIGUSR1(){
+    is_vertical_in_range = true;
+}
+
+void handle_SIGUSR2(){
+    is_horizontal_in_range = true;
 }
 
 int main(){
     srand(time(NULL));
 
-    int lanes[LANES];
+    atexit(cleanup);
+    signal(SIGINT, handle_SIGINT);
 
+    int lanes[LANES];
     for (int i = 0; i < LANES; i++){
-        int lane = fork();
-        if (lane == 0){
-            process_lane(i & 1);
+        int pid = fork();
+        if(pid < 0){
+            printf("Error: creating a lane unsuccessful.\n");
+            return 1;
         }
-        lanes[i] = lane;
+        else if (pid == 0){
+            process_lane(i);
+            exit(0);
+        }
+        
+        lanes[i] = pid;
+        usleep(5000);
     }
 
+    printf("Generated processes.\n");
+
+    signal(SIGUSR1, handle_SIGUSR1);
+    signal(SIGUSR2, handle_SIGUSR2);
+
+
     while(true){
-        int id = lanes[rand() % LANES];
-        kill(id, SIGUSR1);
+        int x = rand() % LANES;
+        kill(lanes[x], SIGUSR1);
         
+        printf("========================================================================================================\n");
+        printf("Adding a car to lane %d\n", x);
+        printf("========================================================================================================\n");
         for(int i = 0; i < LANES; i++){
-            printf("[1]");
             kill(lanes[i], SIGUSR2);
         }
 
-        sleep(1);
+        if(is_horizontal_in_range && is_vertical_in_range){
+            printf("Crash between different lanes.\n");
+            return 0;
+        }
+
+        is_vertical_in_range = false;
+        is_horizontal_in_range = false;
+
+        usleep(MAIN_PROCESS_DELAY);
     }
 
     return 0;
