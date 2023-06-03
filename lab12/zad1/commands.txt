@@ -1,0 +1,17 @@
+nasm bootloader.asm -f bin -o bootloader
+truncate -s 1M bootloader
+
+gcc -m32 -ffreestanding -c kernel.c -o kernel.o
+ld -melf_i386 -Tlinker.ld -nostdlib --nmagic -o kernel.elf kernel.o
+objcopy -O binary kernel.elf kernel.bin
+dd if=kernel.bin of=bootloader bs=512 seek=1 conv=notrunc
+
+rm bootloader.vdi
+vboxmanage list hdds | grep ^UUID | awk '{print $2}' | xargs -I% VBoxManage closemedium disk "%" --delete
+VBoxManage convertfromraw bootloader bootloader.vdi --format VDI
+
+ndisasm -o 0x7C00 bootloader | grep -v "add \[bx+si\],al" > test.txt
+
+VBoxManage createvm --name "boot" --ostype "Other" --register
+VBoxManage storagectl "boot" --name "SATA Controller" --add sata
+VBoxManage storageattach "boot" --storagectl "SATA Controller" --port 0 --device 0 --type hdd --medium "bootloader.vdi"
